@@ -51,7 +51,7 @@ pub fn pow(base: u256, exp: u256) -> u256 {
 
 // INTEREST
 
-fn compute_interest(amount: u256, rate: u256, time_diff: u64) -> u256 {
+pub fn compute_interest(amount: u256, rate: u256, time_diff: u64) -> u256 {
     return amount * rate * time_diff.into() / (constants::SECONDS_PER_YEAR.into() * constants::APR_SCALE.into());
 }
 // Return (interest of the loan, fee paid to the platform)
@@ -59,9 +59,8 @@ pub fn interest_to_repay(match_offer: Match, current_time: u64) -> (u256, u256) 
     let time_diff = current_time - match_offer.date_taken;
     let amount = match_offer.amount;
     let lender_rate = match_offer.lending_rate;
-    let fee_rate = match_offer.borrowing_rate - match_offer.lending_rate;
     let interest_lender = compute_interest(amount, lender_rate, time_diff);
-    let fee = compute_interest(amount, fee_rate, time_diff);
+    let fee = compute_interest(amount, constants::APR_PROTOCOL_FEE, time_diff);
     return (interest_lender, fee);
 }
 
@@ -88,4 +87,16 @@ pub fn to_assets_decimals(address: ContractAddress, value: u256) -> u256 {
     let powed = pow(10, 18 - decimals);
     assert!(value % powed == 0, "Value should be divisible by the asset decimals to avoid imprecision");
     value / powed
+}
+
+// VALUE OF COLLATERAL
+
+// Todo: test_value_asset.cairo
+// Not used in the protocol, only in frontend, so it's ok if it underflows
+pub fn value_of_asset(amount: u256, price: u256, ltv: u256) -> u256 {
+    amount * price * ltv / (constants::LTV_SCALE * constants::VALUE_1e18)
+}
+pub fn inverse_value_of_asset(amount: u256, price: u256, ltv: u256) -> u256 {
+    // Round above to always have more collateral than needed
+    1 + (amount * constants::LTV_SCALE * constants::VALUE_1e18) / (price * ltv)
 }

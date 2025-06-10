@@ -25,6 +25,7 @@ pub const MIN_TIME_SPACING_FOR_OFFERS: u64 = SECONDS_PER_DAY;
 
 // APY
 pub const APR_1_PERCENT: u256 = 10000;
+pub const APR_PROTOCOL_FEE: u256 = APR_1_PERCENT;
 pub const APR_SCALE: u256     = APR_1_PERCENT * 100; // Used in compute_interest
 pub const MIN_APR: u256 = APR_1_PERCENT / 100;       // 0.01%
 pub const MAX_APR: u256 = APR_1_PERCENT * 1000;      // 1000%

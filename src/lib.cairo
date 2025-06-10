@@ -3,19 +3,23 @@ pub mod datastructures;
 pub mod constants;
 pub mod mock_erc20;
 
-use datastructures::Price;
+use datastructures::{LendOffer, BorrowOffer, Price, Match};
 use starknet::{ContractAddress, ClassHash};
 
+// Only this part is in audit scope
 #[starknet::interface]
 pub trait IMyCode<TContractState> {
+    // Deposit/Withdraw
     fn deposit(ref self: TContractState, token: ContractAddress, amount: u256);
     fn withdraw(ref self: TContractState, token: ContractAddress, amount: u256);
     
+    // Make/Disable offers
     fn make_lend_offer(ref self: TContractState, token: ContractAddress, amount: u256, accepted_collateral: u256, price: Price);
     fn disable_lend_offer(ref self: TContractState, id_offer: u64);
     fn make_borrow_offer(ref self: TContractState, token: ContractAddress, amount: u256, price: Price);
     fn disable_borrow_offer(ref self: TContractState, id_offer: u64);
 
+    // Match, Repay, and Liquidate offers
     fn match_offer(ref self: TContractState, lend_offer_id: u64, borrow_offer_id: u64, amount: u256);
     fn repay_offer(ref self: TContractState, offer_id: u64);
     fn liquidate_offer(ref self: TContractState, offer_id: u64);
@@ -24,9 +28,35 @@ pub trait IMyCode<TContractState> {
     fn upgrade(ref self: TContractState, new_class_hash: ClassHash);
     fn add_asset(ref self: TContractState, asset: ContractAddress, category: felt252, is_lend_asset: bool, price: u256, ltv: u256);
     fn add_user_point(ref self: TContractState, user: ContractAddress, amount: u256);
+    fn set_points_multiplier(ref self: TContractState, value: u256);
+    fn set_points_multiplier_per_asset(ref self: TContractState, asset: ContractAddress, value: u256);
 
     // Getters
-    fn balanceOf(ref self: TContractState, user: ContractAddress, asset: ContractAddress) -> u256;
+    fn balanceOf(self: @TContractState, user: ContractAddress, asset: ContractAddress) -> u256;
+}
+
+// Frontend functions - all read only - only used in the frontend, never in the contract code - not in audit scope
+#[starknet::interface]
+pub trait IFrontend<TContractState> {
+    // Helper
+    fn frontend_actual_lending_amount(self: @TContractState, offer_id: u64) -> u256;
+    fn frontend_actual_borrowing_amount(self: @TContractState, offer_id: u64) -> u256;
+    // UX
+    fn frontend_get_all_offers(self: @TContractState, category: felt252) -> (Span<BorrowOffer>, Span<LendOffer>);
+    // Frontpage
+    fn frontend_best_available_yield(self: @TContractState, category: felt252) -> (u256, u256);
+    fn frontend_available_to_lend_and_borrow(self: @TContractState, category: felt252) -> (u256, u256);
+    fn frontend_get_lend_offers_of_user(self: @TContractState, category: felt252, user: ContractAddress) -> Span<LendOffer>;
+    fn frontend_get_borrow_offers_of_user(self: @TContractState, category: felt252, user: ContractAddress) -> Span<BorrowOffer>;
+    fn frontend_get_all_matches_of_user(self: @TContractState, category: felt252, user: ContractAddress) -> (Span<(Match, ContractAddress)>, Span<(Match, ContractAddress)>);
+    // Helpers
+    fn frontend_all_lend_offers_len(self: @TContractState) -> u64;
+    fn frontend_all_borrow_offers_len(self: @TContractState) -> u64;
+    fn frontend_get_ltv(self: @TContractState, token: ContractAddress) -> u256;
+    fn frontend_needed_amount_of_collateral(self: @TContractState, token: ContractAddress, amount: u256, maximal_duration: u64, rate: u256) -> u256;
+    // Points
+    fn frontend_get_user_points(self: @TContractState, user: ContractAddress) -> u256;
+    fn frontend_get_total_points(self: @TContractState) -> u256;
 }
 
 #[starknet::contract]
@@ -34,29 +64,29 @@ pub mod MyCode {
     use super::constants;
     use super::mock_erc20::{ IERC20Dispatcher, IERC20DispatcherTrait };
     // Our structures
-    use fixedlend::datastructures::{ LendingOffer, BorrowingOffer, Price, Match };
+    use fixedlend::datastructures::{ LendOffer, BorrowOffer, Price, Match };
     // Utilities
     use fixedlend::utilities::{ assert_is_admin, assert_validity_of_price,
-        interest_to_repay, max_to_repay, max2, min2, to_assets_decimals };
+        interest_to_repay, max_to_repay, max2, min2, compute_interest, to_assets_decimals, value_of_asset, inverse_value_of_asset };
     // Starknet
     use starknet::{ ContractAddress, ClassHash, syscalls::replace_class_syscall, get_caller_address, get_contract_address, get_block_timestamp };
     use starknet::storage::{ StoragePointerReadAccess, StoragePointerWriteAccess, StoragePathEntry };
-    use starknet::storage::{ Map, StorageMapReadAccess, StorageMapWriteAccess, Vec, MutableVecTrait };
+    use starknet::storage::{ Map, StorageMapReadAccess, StorageMapWriteAccess, Vec, VecTrait, MutableVecTrait };
 
     #[storage]
     struct Storage {
         // Informations about users
         assets_user: Map<ContractAddress, Map<ContractAddress, u256>>, // User => (Asset => quantity)
-        lend_offers: Vec<LendingOffer>,
-        borrow_offers: Vec<BorrowingOffer>,
+        lend_offers: Vec<LendOffer>,
+        borrow_offers: Vec<BorrowOffer>,
         current_matches: Vec<Match>,
 
         // Informations about assets
         category_information: Map<ContractAddress, felt252>, // Which asset is of which category
         assets_lender: Map<ContractAddress, bool>,           // Assets accepted to be lent
         assets_borrower: Map<ContractAddress, bool>,         // Assets accepted to borrow with
-        price_information: Map<ContractAddress, u256>,       // Price of assets - see integration.cairo for more info
-        ltv_information: Map<ContractAddress, u256>,         // Loan To Value info about assets - see integration.cairo
+        price_information: Map<ContractAddress, u256>,       // Price of assets - used in utilities.cairo/inverse_value_of_asset
+        ltv_information: Map<ContractAddress, u256>,         // Loan To Value info about assets - - used too in inverse_value_of_asset
 
         // Points
         points_multiplier: u256,
@@ -67,14 +97,6 @@ pub mod MyCode {
 
     #[constructor]
     fn constructor(ref self: ContractState) {}
-
-    // First some non public functions, and then the implementation of the interface
-    fn compute_value_of_asset(self: @ContractState, amount: u256, address: ContractAddress) -> u256 {
-        let price = self.price_information.read(address);
-        let ltv = self.ltv_information.read(address);
-        let amount = amount * price * ltv / constants::LTV_SCALE;
-        amount / constants::VALUE_1e18 // price_of_assets it scaled to 10**18, that's why we divide by 10**18
-    }
 
     // Private function
     fn increase_user_point(ref self: ContractState, user: ContractAddress, amount: u256, asset: ContractAddress) {
@@ -98,9 +120,9 @@ pub mod MyCode {
             self.assets_user.entry(caller).write(token, current_deposit);
             let erc20 = IERC20Dispatcher { contract_address: token };
             let contract = get_contract_address();
-            let amount = to_assets_decimals(token, amount);
-            assert!(erc20.allowance(caller, contract) >= amount, "Not enough allowance to make this deposit");
-            erc20.transferFrom(caller, contract, amount);
+            let amount_asset = to_assets_decimals(token, amount);
+            assert!(erc20.allowance(caller, contract) >= amount_asset, "Not enough allowance to make this deposit");
+            erc20.transferFrom(caller, contract, amount_asset);
         }
 
         // @dev: amount in 10**18 decimals
@@ -112,7 +134,8 @@ pub mod MyCode {
             current_deposit -= amount;
             self.assets_user.entry(caller).write(token, current_deposit);
             let erc20 = IERC20Dispatcher { contract_address: token };
-            erc20.transfer(caller, to_assets_decimals(token, amount));
+            let amount_asset = to_assets_decimals(token, amount);
+            erc20.transfer(caller, amount_asset);
         }
 
         // @dev: amount is in 10**18 scale
@@ -122,7 +145,7 @@ pub mod MyCode {
             assert_validity_of_price(price);
             let caller = get_caller_address();
             
-            let lend_offer = LendingOffer {
+            let lend_offer = LendOffer {
                 id: self.lend_offers.len(),
                 is_active: true,
                 proposer: caller,
@@ -151,7 +174,7 @@ pub mod MyCode {
             assert_validity_of_price(price);
             let caller = get_caller_address();
             
-            let borrow_offer = BorrowingOffer {
+            let borrow_offer = BorrowOffer {
                 id: self.borrow_offers.len(),
                 is_active: true,
                 proposer: caller,
@@ -159,7 +182,6 @@ pub mod MyCode {
                 amount_available: amount,
                 price,
                 token_collateral: token,
-                amount_collateral: amount
             };
 
             self.borrow_offers.push(borrow_offer);
@@ -179,7 +201,7 @@ pub mod MyCode {
             let lender = lend_offer.proposer;
             let lend_token = lend_offer.token;
 
-            let mut borrow_offer = self.borrow_offers.at(lend_offer_id).read();
+            let mut borrow_offer = self.borrow_offers.at(borrow_offer_id).read();
             let borrower = borrow_offer.proposer;
             let borrow_token = borrow_offer.token_collateral;
 
@@ -190,8 +212,8 @@ pub mod MyCode {
             assert!(self.category_information.read(lend_offer.token) == self.category_information.read(borrow_offer.token_collateral),
                 "The assets are not in the same category, the match can't be made");
             // Check: The APR is good
-            assert!(borrow_offer.price.rate >= constants::APR_1_PERCENT + lend_offer.price.rate,
-                "Offer price are not compatible, you need borrow_rate - lending_rate >= 1percent (platform fee)");
+            assert!(borrow_offer.price.rate >= lend_offer.price.rate + constants::APR_PROTOCOL_FEE,
+                "Offer price are not compatible, you need borrow_rate >= lending_rate + platform fee");
             // Check: amount is not too large
             assert!(amount <= lend_offer.amount_available, "Not enough demand available in the lend offer");
             assert!(amount <= borrow_offer.amount_available, "Not enough demand available in the borrow offer");
@@ -211,25 +233,40 @@ pub mod MyCode {
             assert_validity_of_price(price_match);
 
             let current_date = get_block_timestamp();
-            let new_match = Match {
+            
+            let mut new_match = Match {
                 id: self.current_matches.len(),
                 is_active: true,
                 lend_offer_id: lend_offer.id,
                 borrow_offer_id: borrow_offer.id,
                 amount: amount,
-                lending_rate: lend_offer.price.rate,
+                amount_collateral: 0, // Filled just below
+                lending_rate: price_match.rate,
                 date_taken: current_date,
-                borrowing_rate: borrow_offer.price.rate,
+                // price_match.rate + constants::APR_PROTOCOL_FEE is better for the borrower than borrow_offer.price.rate
+                borrowing_rate: price_match.rate + constants::APR_PROTOCOL_FEE, // Platform fee
                 minimal_duration: price_match.minimal_duration,
                 maximal_duration: price_match.maximal_duration
             };
-            let max_to_repay = max_to_repay(new_match);
             // Check: The lender has enough asset to lend
             assert!(self.assets_user.entry(lend_offer.proposer).read(lend_token) >= amount, 
-                "The lender did not deposit enough asset to lend for this offer");
+            "The lender did not deposit enough asset to lend for this offer");
             // Check: The borrower has enough collateral
-            assert!(self.assets_user.entry(borrow_offer.proposer).read(borrow_token) >= max_to_repay, 
+            let max_to_repay = max_to_repay(new_match);
+            let price_collateral = self.price_information.entry(borrow_offer.token_collateral).read();
+            let ltv_collateral = self.ltv_information.entry(borrow_offer.token_collateral).read();
+            // Essentially, we want value_of_assert(collateral) >= value_of_asset(max_to_repay)
+            // Right now, value_of_asset(max_to_repay) is max_to_repay
+            // And collateral_amount is inverse_value_of_asset(max_to_repay, price_collateral, ltv_collateral)
+            // So the assertion we want is:
+            // value_of_assert(inverse_value_of_asset(max_to_repay, price_collateral, ltv_collateral) >= max_to_repay
+            // and yeah so these functions are built so that value_of_asset(inverse_value_of_asset(smth)) >= smth
+            // (Fuzz tested in test_utilities function check_value_of_collateral)
+            // So the assertion we want is always satisfied with this collateral, and we are all good
+            let collateral_amount = inverse_value_of_asset(max_to_repay, price_collateral, ltv_collateral);
+            assert!(self.assets_user.entry(borrow_offer.proposer).read(borrow_token) >= collateral_amount, 
                 "The borrower did not deposit enough collateral for this offer");
+            new_match.amount_collateral = collateral_amount;
             self.current_matches.push(new_match);
 
             // Update the offers
@@ -242,11 +279,11 @@ pub mod MyCode {
             // Transfer the assets
             let lender_balance = self.assets_user.entry(lender).read(lend_token);
             self.assets_user.entry(lender).write(lend_token, lender_balance - amount);
-            let borrow_lend_balance = self.assets_user.entry(borrower).read(lend_token);
-            self.assets_user.entry(borrower).write(lend_token, borrow_lend_balance + amount);
+            let borrow_balance_lend = self.assets_user.entry(borrower).read(lend_token);
+            self.assets_user.entry(borrower).write(lend_token, borrow_balance_lend + amount);
             // Substract the collateral from borrower account
-            let borrower_balance = self.assets_user.entry(borrower).read(borrow_token);
-            self.assets_user.entry(borrower).write(borrow_token, borrower_balance - max_to_repay);
+            let borrower_balance_borrow = self.assets_user.entry(borrower).read(borrow_token);
+            self.assets_user.entry(borrower).write(borrow_token, borrower_balance_borrow - collateral_amount);
         }
         
         fn repay_offer(ref self: ContractState, offer_id: u64) {
@@ -275,17 +312,17 @@ pub mod MyCode {
                 "It is too late to repay this offer please liquidate instead");
 
             let (interest_lender, fee) = interest_to_repay(match_offer, current_time);
-            let borrower_balance = self.assets_user.entry(borrower).read(lend_token);
-            assert!(borrower_balance >= amount + interest_lender + fee, "Not enough balance to repay the offer");
-            self.assets_user.entry(borrower).write(lend_token, borrower_balance - amount - interest_lender - fee);
+            let borrower_balance_lend = self.assets_user.entry(borrower).read(lend_token);
+            assert!(borrower_balance_lend >= amount + interest_lender + fee, "Not enough balance to repay the offer");
+            self.assets_user.entry(borrower).write(lend_token, borrower_balance_lend - amount - interest_lender - fee);
             let lender_balance = self.assets_user.entry(lender).read(lend_token);
             self.assets_user.entry(lender).write(lend_token, lender_balance + amount + interest_lender);
             let contract_address = get_contract_address();
             let contract_balance = self.assets_user.entry(contract_address).read(lend_token);
             self.assets_user.entry(contract_address).write(lend_token, contract_balance + fee);
             // Give back the collateral to the borrower
-            let borrower_balance = self.assets_user.entry(borrower).read(borrow_token);
-            self.assets_user.entry(borrower).write(borrow_token, borrower_balance + max_to_repay(match_offer));
+            let borrower_balance_borrow = self.assets_user.entry(borrower).read(borrow_token);
+            self.assets_user.entry(borrower).write(borrow_token, borrower_balance_borrow + match_offer.amount_collateral);
 
             match_offer.is_active = false;
             self.current_matches.at(offer_id).write(match_offer);
@@ -294,12 +331,13 @@ pub mod MyCode {
             increase_user_point(ref self, lender, total_amount, lend_token);
             increase_user_point(ref self, borrower, total_amount, lend_token);
 
-            lend_offer.amount_available += amount;
+            lend_offer.amount_available += amount + interest_lender; // Auto compound interest
             self.lend_offers.at(lend_offer_id).write(lend_offer);
             borrow_offer.amount_available += amount;
             self.borrow_offers.at(borrow_offer_id).write(borrow_offer);
         }
 
+        // In liquidation, the protocol do not take the 1% APR fee -so we compensate the lender a bit more
         fn liquidate_offer(ref self: ContractState, offer_id: u64) {
             let mut match_offer = self.current_matches.at(offer_id).read();
             let amount = match_offer.amount;
@@ -329,12 +367,15 @@ pub mod MyCode {
                 // Repay with balance of borrower
                 let lender_balance = self.assets_user.entry(lender).read(lend_token);
                 self.assets_user.entry(lender).write(lend_token, lender_balance + amount + interest_lender + fee);
-                let borrower_balance = self.assets_user.entry(borrower).read(lend_token);
-                self.assets_user.entry(borrower).write(lend_token, borrower_balance - amount - interest_lender - fee);
+                let borrower_balance_lend = self.assets_user.entry(borrower).read(lend_token);
+                self.assets_user.entry(borrower).write(lend_token, borrower_balance_lend - amount - interest_lender - fee);
+                // Give back the collateral to the borrower
+                let borrower_balance_borrow = self.assets_user.entry(borrower).read(borrow_token);
+                self.assets_user.entry(borrower).write(borrow_token, borrower_balance_borrow + match_offer.amount_collateral);
             } else {
-                // Transfer collateral to user
+                // Transfer collateral to the lender
                 let lender_balance = self.assets_user.entry(lender).read(borrow_token);
-                self.assets_user.entry(lender).write(borrow_token, lender_balance + max_to_repay(match_offer));
+                self.assets_user.entry(lender).write(borrow_token, lender_balance + match_offer.amount_collateral);
             }
             let total_amount = amount + interest_lender + fee;
             increase_user_point(ref self, lender, total_amount, lend_token);
@@ -357,16 +398,194 @@ pub mod MyCode {
                 self.assets_borrower.write(asset, true);
                 self.ltv_information.write(asset, ltv);
             }
+            // Right now, this information for lend asset is not used, but maybe in the future so we add it in the storage right now
             self.price_information.write(asset, price);
         }
         fn add_user_point(ref self: ContractState, user: ContractAddress, amount: u256) {
+            assert_is_admin();
             self.user_points.entry(user).write(self.user_points.entry(user).read() + amount);
+        }
+        fn set_points_multiplier(ref self: ContractState, value: u256) {
+            assert_is_admin();
+            self.points_multiplier.write(value);
+        }
+        fn set_points_multiplier_per_asset(ref self: ContractState, asset: ContractAddress, value: u256) {
+            assert_is_admin();
+            self.points_multiplier_per_asset.entry(asset).write(value);
         }
 
         // Getters
-        fn balanceOf(ref self: ContractState, user: ContractAddress, asset: ContractAddress) -> u256 {
+        fn balanceOf(self: @ContractState, user: ContractAddress, asset: ContractAddress) -> u256 {
             assert!(self.category_information.read(asset) != 0, "This token has no category ");
             self.assets_user.entry(user).read(asset)
+        }
+    }
+
+    // After this line everything is out of audit scope - use at your own risk
+    // I reserve the right to change all of these functions, including
+    // but not only return wrong values, delete them, change their arguments etc... - use them at risk
+    // THE BELOW CODE IS NOT TESTED, I reserve the right to change these functions, including
+    // but not only return wrong values, delete them, change their arguments etc... - use them at risk
+    // THE BELOW CODE IS NOT PART OF ANY AUDIT SCOPE, I decline any responssabilities regarding
+    // the eventual correctness of them - use them at risk
+    // Thanks
+    // Frontend functions - all read only - only used in the frontend, never in the contract code
+    fn min2_256(a: u256, b: u256) -> u256 {
+        if a >= b { return b; }
+        return a;
+    }
+    #[abi(embed_v0)]
+    impl FrontendImpl of super::IFrontend<ContractState> {
+        // From an offer, check what the user can actually pay, aka: its balance, and what the offer permits
+        fn frontend_actual_lending_amount(self: @ContractState, offer_id: u64) -> u256 {
+            let offer: LendOffer = self.lend_offers.at(offer_id).read();
+            let value1 = self.assets_user.entry(offer.proposer).read(offer.token);
+            let value2 = offer.amount_available;
+            min2_256(value1, value2)
+        }
+        fn frontend_actual_borrowing_amount(self: @ContractState, offer_id: u64) -> u256 {
+            let offer = self.borrow_offers.at(offer_id).read();
+            let token = offer.token_collateral;
+            let value1 = value_of_asset(self.assets_user.entry(offer.proposer).read(token), self.price_information.entry(token).read(), self.ltv_information.entry(token).read());
+            let value2 = offer.amount_available;
+            return min2_256(value1, value2);
+        }
+        
+        // Return all current and actual offer based on what the user can pay
+        fn frontend_get_all_offers(self: @ContractState, category: felt252) -> (Span<BorrowOffer>, Span<LendOffer>) {
+            let mut borrowing = array![];
+            let mut i_borrowing = 0;
+            let borrow_offer_size = self.borrow_offers.len();
+            while i_borrowing != borrow_offer_size {
+                let mut offer = self.borrow_offers.at(i_borrowing).read();
+                if offer.is_active && self.category_information.read(offer.token_collateral) == category {
+                    offer.amount_available = self.frontend_actual_borrowing_amount(i_borrowing);
+                    borrowing.append(offer);
+                }
+                i_borrowing += 1;
+            };
+            let mut lending = array![];
+            let mut i_lending = 0;
+            let lend_offer_size = self.lend_offers.len();
+            while i_lending != lend_offer_size {
+                let mut offer = self.lend_offers.at(i_lending).read();
+                if offer.is_active && self.category_information.read(offer.token) == category {
+                    offer.amount_available = self.frontend_actual_lending_amount(i_lending);
+                    lending.append(offer);
+                }
+                i_lending += 1;
+            };
+            (borrowing.span(), lending.span())
+        }
+        // Return (max_borrow_yield, min_lend_yield)
+        // Todo filtrer selon la catégorie
+        fn frontend_best_available_yield(self: @ContractState, category: felt252) -> (u256, u256) {
+            let (all_borrow, all_lend) = self.frontend_get_all_offers(category);
+            let mut max_yield_borrow = constants::MIN_APR;
+            for borrow_offer in all_borrow {
+                if *borrow_offer.price.rate > max_yield_borrow && *borrow_offer.amount_available >= constants::VALUE_1e18/1000 {
+                    max_yield_borrow = *borrow_offer.price.rate;
+                }
+            };
+            let mut max_yield_lend = constants::MAX_APR;
+            for lend_offer in all_lend {
+                if *lend_offer.price.rate < max_yield_lend && *lend_offer.amount_available >= constants::VALUE_1e18/1000 {
+                    max_yield_lend = *lend_offer.price.rate;
+                }
+            };
+            (max_yield_borrow, max_yield_lend)
+        }
+        // Return (sum(available_borrow_volume), sum(available_lend_volume))
+        fn frontend_available_to_lend_and_borrow(self: @ContractState, category: felt252) -> (u256, u256) {
+            let (all_borrow, all_lend) = self.frontend_get_all_offers(category);
+            let mut available_to_borrow = 0;
+            for borrow_offer in all_borrow {
+                available_to_borrow += self.frontend_actual_borrowing_amount(*borrow_offer.id);
+            };
+            let mut available_to_lend = 0;
+            for lend_offer in all_lend {
+                available_to_lend += self.frontend_actual_lending_amount(*lend_offer.id);
+            };
+            (available_to_borrow, available_to_lend)
+        }
+        
+        fn frontend_get_lend_offers_of_user(self: @ContractState, category: felt252, user: ContractAddress) -> Span<LendOffer> {
+            let mut user_lend_offers = array![];
+            let lend_offer_size = self.lend_offers.len();
+            let mut i_lending = 0;
+            while i_lending != lend_offer_size {
+                let offer = self.lend_offers.at(i_lending).read();
+                if offer.is_active && offer.proposer == user && self.category_information.read(offer.token) == category {
+                    user_lend_offers.append(offer);
+                }
+                i_lending += 1;
+            };
+            user_lend_offers.span()
+        }
+        
+        fn frontend_get_borrow_offers_of_user(self: @ContractState, category: felt252, user: ContractAddress) -> Span<BorrowOffer> {
+            let mut user_borrow_offers = array![];
+            let borrow_offer_size = self.borrow_offers.len();
+            let mut i_borrowing = 0;
+            while i_borrowing != borrow_offer_size {
+                let offer = self.borrow_offers.at(i_borrowing).read();
+                if offer.is_active && offer.proposer == user && self.category_information.read(offer.token_collateral) == category {
+                    user_borrow_offers.append(offer);
+                }
+                i_borrowing += 1;
+            };
+            user_borrow_offers.span()
+        }
+        
+        // First return value is loans when we are borrowers - second is lender
+        // The second value of each tuple is the token of the loan
+        fn frontend_get_all_matches_of_user(self: @ContractState, category: felt252, user: ContractAddress) -> (Span<(Match, ContractAddress)>, Span<(Match, ContractAddress)>) {
+            let mut user_matches_borrowing = array![];
+            let mut user_matches_lending = array![];
+            let match_size = self.current_matches.len();
+            let mut i_match = 0;
+            while i_match != match_size {
+                let match_offer = self.current_matches.at(i_match).read();
+                let lend_offer = self.lend_offers.at(match_offer.lend_offer_id).read();
+                let borrow_offer = self.borrow_offers.at(match_offer.borrow_offer_id).read();
+                if match_offer.is_active && self.category_information.read(lend_offer.token) == category {
+                    if borrow_offer.proposer == user {
+                        user_matches_borrowing.append((match_offer, lend_offer.token));
+                    }
+                    if lend_offer.proposer == user {
+                        user_matches_lending.append((match_offer, lend_offer.token));
+                    }
+                }
+                i_match += 1;
+            };
+            (user_matches_borrowing.span(), user_matches_lending.span())
+        }
+
+        // Todo prendre category comme argument
+        fn frontend_all_lend_offers_len(self: @ContractState) -> u64 {
+            self.lend_offers.len()
+        }
+        fn frontend_all_borrow_offers_len(self: @ContractState) -> u64 {
+            self.borrow_offers.len()
+        }
+        fn frontend_get_ltv(self: @ContractState, token: ContractAddress) -> u256 {
+            self.ltv_information.entry(token).read()
+        }
+        // fn frontend_value_of_collateral(self: @ContractState, token: ContractAddress, amount: u256) -> u256 {
+        //     value_of_asset(amount, self.price_information.entry(token).read(), self.ltv_information.entry(token).read())
+        // }
+        fn frontend_needed_amount_of_collateral(self: @ContractState, token: ContractAddress, amount: u256, maximal_duration: u64, rate: u256) -> u256 {
+            let price = self.price_information.entry(token).read();
+            let ltv = self.ltv_information.entry(token).read();
+            let max_interest = compute_interest(amount, rate, maximal_duration);
+            inverse_value_of_asset(max_interest + amount, price, ltv)
+        }
+        
+        fn frontend_get_user_points(self: @ContractState, user: ContractAddress) -> u256 {
+            self.user_points.read(user)
+        }
+        fn frontend_get_total_points(self: @ContractState) -> u256 {
+            self.total_points.read()
         }
     }
 }

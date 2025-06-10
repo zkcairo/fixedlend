@@ -4,16 +4,45 @@ FixedLend, a p2p lending app on starknet for yield trading/hedging.
 
 ## Flow of use:
 
-1. Borrowers deposit non yield assets (eg eth)
-2. Lenders deposit yield assets (eg Feth, wsteth, etc...)
-3. Both borrowers and lenders make offers on the market
-4. Anyone can match any compatible offers - usually someone that wants to take an offer will make a correponding offer and immediatly match it with its wanted offer
+1. Borrowers deposit non yield assets (eg eth) with `deposit`
+2. Lenders deposit yield assets (eg Feth, wsteth, etc...) with `deposit`
+3. Both borrowers and lenders make offers on the market with `make_lend_offer` and `make_borrow_offer`
+4. Anyone can match any compatible offers - usually someone that wants to take an offer will make a correponding offer and immediatly match it with its wanted offer. This is done with `match_offers`
+5. Offer are repaid with `repay_offer` or `liquidate_offer`
+
+## The different repayment flows:
+
+1. A regular repaid loan:
+Only the borrower can repay, and then it just takes the money that the borrower has in the protocol to transfer it to the lender.
+The borrower has to repay within the allowed time.
+In this case, the lender gets what he lent, and some interest.
+
+2. A liquidation where the borrower still has the money to repay the lender:
+In this case, when the liquidate function is called, the lender is repaid with the amount
+that the borrower has in the protocol.
+So if the loan was 100eth with 200feth collateral, and the borrower has 110eth in the protocol,
+then the liquidation do use the 110eth to repay the lender, and the collateral is not touched.
+In this case, the lender gets what he lent, and some interest.
+
+3. A liquidation but the borrower doesn't have the money to repay the lender:
+Its collateral is transferred to the lender, the value of this collateral isn't recomputed, so the lender can end up with a loss.
+The LTV ensures this won't be the case hopefully, but it can happen when yield bearing assets depeg.
+So if the loan was 100eth with 200feth collateral, and the borrower has 0eth in the protocol,
+all the 200feth is transferred to the lender. If for instance the borrower has 1000feth in the protocol,
+only 200feth is transferred to the lender, and the rest is not touched.
+In this case, the lender do not get what he lent, but get some collateral instead.
+
+## Known issues:
+
+If assets depeg then users are rekt, eg a lend of eth with feth as collateral, if feth depegs, then the lender can end up with a loss.
 
 ## How to run build/tests:
 
 Build: `scarb build`
 
 Run the tests:`snforge test`
+
+
 
 # Risks of using the app:
 
