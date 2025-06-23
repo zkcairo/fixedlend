@@ -373,7 +373,7 @@ pub mod MyCode {
                 // Give back the collateral to the borrower
                 let borrower_balance_borrow = self.assets_user.entry(borrower).read(borrow_token);
                 self.assets_user.entry(borrower).write(borrow_token, borrower_balance_borrow + match_offer.amount_collateral);
-                // Todo, relist the lend offer
+                // Todo, maybe re-add amount_available to the lend offer
             } else {
                 // Transfer collateral to the lender
                 let lender_balance = self.assets_user.entry(lender).read(borrow_token);
