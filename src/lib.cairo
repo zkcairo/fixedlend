@@ -86,7 +86,7 @@ pub mod MyCode {
         assets_lender: Map<ContractAddress, bool>,           // Assets accepted to be lent
         assets_borrower: Map<ContractAddress, bool>,         // Assets accepted to borrow with
         price_information: Map<ContractAddress, u256>,       // Price of assets - used in utilities.cairo/inverse_value_of_asset
-        ltv_information: Map<ContractAddress, u256>,         // Loan To Value info about assets - - used too in inverse_value_of_asset
+        ltv_information: Map<ContractAddress, u256>,         // Loan To Value info about assets - used too in inverse_value_of_asset
 
         // Points
         points_multiplier: u256,
@@ -332,6 +332,7 @@ pub mod MyCode {
             increase_user_point(ref self, borrower, total_amount, lend_token);
 
             lend_offer.amount_available += amount + interest_lender; // Auto compound interest
+            lend_offer.total_amount += interest_lender;
             self.lend_offers.at(lend_offer_id).write(lend_offer);
             borrow_offer.amount_available += amount;
             self.borrow_offers.at(borrow_offer_id).write(borrow_offer);
@@ -372,6 +373,7 @@ pub mod MyCode {
                 // Give back the collateral to the borrower
                 let borrower_balance_borrow = self.assets_user.entry(borrower).read(borrow_token);
                 self.assets_user.entry(borrower).write(borrow_token, borrower_balance_borrow + match_offer.amount_collateral);
+                // Todo, relist the lend offer
             } else {
                 // Transfer collateral to the lender
                 let lender_balance = self.assets_user.entry(lender).read(borrow_token);
