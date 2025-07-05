@@ -36,6 +36,7 @@ pub const LTV_100_PERCENT: u256 = LTV_SCALE;
 pub const LTV_50_PERCENT: u256 = LTV_SCALE / 2;
 pub const LTV_10_PERCENT: u256 = LTV_SCALE / 10;
 pub const LTV_1_PERCENT: u256  = LTV_SCALE / 100;
+pub const LTV_01_PERCENT: u256  = LTV_SCALE / 1000;
 
 // Constants
 pub const VALUE_1e18: u256 = 1000000000000000000;
