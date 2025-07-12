@@ -13,7 +13,7 @@ pub fn assert_is_admin() {
 pub fn assert_validity_of_price(price: Price) {
     // APR check
     // Todo add test so that all price in between is available !! - same for time
-    assert!(price.rate >= constants::MIN_APR, "Please lend/borrow at more than 1% APR");
+    assert!(price.rate >= constants::MIN_APR, "Please lend/borrow at more than 0.1% APR");
     assert!(price.rate <= constants::MAX_APR, "Please lend/borrow at less than 1000% APR");
     // Time check
     assert!(price.minimal_duration <= price.maximal_duration, "The minimal duration should be less than the maximal duration for the combined match offer");

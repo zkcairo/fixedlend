@@ -25,9 +25,10 @@ pub const MIN_TIME_SPACING_FOR_OFFERS: u64 = SECONDS_PER_DAY;
 
 // APY
 pub const APR_1_PERCENT: u256 = 10000;
+pub const APR_01_PERCENT: u256  = APR_1_PERCENT / 10;
 pub const APR_PROTOCOL_FEE: u256 = APR_1_PERCENT;
 pub const APR_SCALE: u256     = APR_1_PERCENT * 100; // Used in compute_interest
-pub const MIN_APR: u256 = APR_1_PERCENT / 100;       // 0.01%
+pub const MIN_APR: u256 = APR_01_PERCENT;            // 0.1%
 pub const MAX_APR: u256 = APR_1_PERCENT * 1000;      // 1000%
 
 // LTV
@@ -36,7 +37,6 @@ pub const LTV_100_PERCENT: u256 = LTV_SCALE;
 pub const LTV_50_PERCENT: u256 = LTV_SCALE / 2;
 pub const LTV_10_PERCENT: u256 = LTV_SCALE / 10;
 pub const LTV_1_PERCENT: u256  = LTV_SCALE / 100;
-pub const LTV_01_PERCENT: u256  = LTV_SCALE / 1000;
 
 // Constants
 pub const VALUE_1e18: u256 = 1000000000000000000;

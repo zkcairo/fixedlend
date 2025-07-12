@@ -155,7 +155,7 @@ pub mod MyCode {
         fn make_lend_offer(ref self: ContractState, token: ContractAddress, amount: u256, accepted_collateral: u256, price: Price) {
             assert!(self.category_information.read(token) != 0, "This token is disabled, no new offer with it can be made");
             assert!(self.assets_lender.read(token), "This token cannot be lent");
-            assert!(price.rate % constants::LTV_01_PERCENT == 0, "APR must be modulo 0 of 0.1% apr (aka 5.1% is ok but 5.12% is not)");
+            assert!(price.rate % constants::APR_01_PERCENT == 0, "APR must be modulo 0 of 0.1% apr (aka 5.1% is ok but 5.12% is not)");
             assert_validity_of_price(price);
             let caller = get_caller_address();
             
@@ -185,7 +185,7 @@ pub mod MyCode {
         fn make_borrow_offer(ref self: ContractState, token: ContractAddress, amount: u256, price: Price) {
             assert!(self.category_information.read(token) != 0, "This token is disabled, no new offer with it can be made");
             assert!(self.assets_borrower.read(token), "This token is not a borrow asset");
-            assert!(price.rate % constants::LTV_01_PERCENT == 0, "APR must be modulo 0 of 0.1% apr (aka 5.1% is ok but 5.12% is not)");
+            assert!(price.rate % constants::APR_01_PERCENT == 0, "APR must be modulo 0 of 0.1% apr (aka 5.1% is ok but 5.12% is not)");
             assert_validity_of_price(price);
             let caller = get_caller_address();
             
@@ -437,9 +437,13 @@ pub mod MyCode {
             assert_is_admin();
             assert!(self.category_information.read(asset) != 0, "This asset is already disabled");
             self.category_information.write(asset, 0);
-            // We don't reset all the information about the asset, as the price and ltv,
-            // because some loans may still be active when we disable this asset
-            // We want them to go through as expected, and just disallow any new loan/offer
+            self.assets_lender.write(asset, false);
+            self.assets_borrower.write(asset, false);
+            self.ltv_information.write(asset, 0);
+            self.price_information.write(asset, 0);
+            // We don't reset points_multiplier_per_asset to 0, because there might be some loans going throught when we disable the asset
+            // And on settlement of this loan, points needs to be accrued with the value of points_multiplier_per_asset
+            // However, the rest of the values (price, ltv, ...) we don't use them on settlements of loans
         }
         fn add_user_point(ref self: ContractState, user: ContractAddress, amount: u256) {
             assert_is_admin();
