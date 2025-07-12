@@ -25,15 +25,19 @@ pub trait IMyCode<TContractState> {
     fn repay_offer(ref self: TContractState, offer_id: u64);
     fn liquidate_offer(ref self: TContractState, offer_id: u64);
 
-    // Admin
+    // Admin section
     fn upgrade(ref self: TContractState, new_class_hash: ClassHash);
+    // Add - remove assets
     fn add_asset(ref self: TContractState, asset: ContractAddress, category: felt252, is_lend_asset: bool, price: u256, ltv: u256, points_multiplier: u256);
     fn set_asset(ref self: TContractState, asset: ContractAddress, price: u256, ltv: u256, points_multiplier: u256);
     fn remove_asset(ref self: TContractState, asset: ContractAddress);
+    // Points
     fn add_user_point(ref self: TContractState, user: ContractAddress, amount: u256);
-    fn set_points_multiplier(ref self: TContractState, value: u256);
+    fn remove_user_point(ref self: TContractState, user: ContractAddress, amount: u256);
+    fn hard_reset_user_point(ref self: TContractState, user: ContractAddress);
+    fn set_points_multiplier(ref self: TContractState, value: u256); // Set the global points multiplier
 
-    // Getters
+    // Somewhat a frontend thing anyway - not admin
     fn balanceOf(self: @TContractState, user: ContractAddress, asset: ContractAddress) -> u256;
 }
 
@@ -155,7 +159,6 @@ pub mod MyCode {
         fn make_lend_offer(ref self: ContractState, token: ContractAddress, amount: u256, accepted_collateral: u256, price: Price) {
             assert!(self.category_information.read(token) != 0, "This token is disabled, no new offer with it can be made");
             assert!(self.assets_lender.read(token), "This token cannot be lent");
-            assert!(price.rate % constants::APR_01_PERCENT == 0, "APR must be modulo 0 of 0.1% apr (aka 5.1% is ok but 5.12% is not)");
             assert_validity_of_price(price);
             let caller = get_caller_address();
             
@@ -185,7 +188,6 @@ pub mod MyCode {
         fn make_borrow_offer(ref self: ContractState, token: ContractAddress, amount: u256, price: Price) {
             assert!(self.category_information.read(token) != 0, "This token is disabled, no new offer with it can be made");
             assert!(self.assets_borrower.read(token), "This token is not a borrow asset");
-            assert!(price.rate % constants::APR_01_PERCENT == 0, "APR must be modulo 0 of 0.1% apr (aka 5.1% is ok but 5.12% is not)");
             assert_validity_of_price(price);
             let caller = get_caller_address();
             
@@ -341,7 +343,7 @@ pub mod MyCode {
             self.current_matches.at(offer_id).write(match_offer);
 
             increase_user_point(ref self, lender, fee, lend_token);
-            increase_user_point(ref self, borrower, fee, lend_token);
+            increase_user_point(ref self, borrower, fee, borrow_token);
 
             lend_offer.amount_available += amount + interest_lender; // Auto compound interest
             lend_offer.total_amount += interest_lender;
@@ -389,7 +391,7 @@ pub mod MyCode {
                 self.assets_user.entry(borrower).write(borrow_token, borrower_balance_borrow + match_offer.amount_collateral);
                 // Points
                 increase_user_point(ref self, lender, fee, lend_token);
-                increase_user_point(ref self, borrower, fee, lend_token);
+                increase_user_point(ref self, borrower, fee, borrow_token);
                 // Re-add amount_available to the lend offer
                 lend_offer.amount_available += amount + interest_lender; // Auto compound interest
                 lend_offer.total_amount += interest_lender;
@@ -448,6 +450,17 @@ pub mod MyCode {
         fn add_user_point(ref self: ContractState, user: ContractAddress, amount: u256) {
             assert_is_admin();
             self.user_points.entry(user).write(self.user_points.entry(user).read() + amount);
+            self.total_points.write(self.total_points.read() + amount);
+        }
+        fn remove_user_point(ref self: ContractState, user: ContractAddress, amount: u256) {
+            assert_is_admin();
+            self.user_points.entry(user).write(self.user_points.entry(user).read() - amount);
+            self.total_points.write(self.total_points.read() - amount);
+        }
+        // Break the invariant that total_points is the sum of all users points - use for "emergency" for whatever it is
+        fn hard_reset_user_point(ref self: ContractState, user: ContractAddress) {
+            assert_is_admin();
+            self.user_points.entry(user).write(0);
         }
         fn set_points_multiplier(ref self: ContractState, value: u256) {
             assert_is_admin();
