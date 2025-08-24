@@ -36,6 +36,8 @@ pub trait IMyCode<TContractState> {
     fn remove_user_point(ref self: TContractState, user: ContractAddress, amount: u256);
     fn hard_reset_user_point(ref self: TContractState, user: ContractAddress);
     fn set_points_multiplier(ref self: TContractState, value: u256); // Set the global points multiplier
+    // Disable assets
+    fn force_withdraw_disable_asset(ref self: TContractState, user: ContractAddress, asset: ContractAddress, value: u256, subtract_balance: u256);
 
     // Somewhat a frontend thing anyway - not admin
     fn balanceOf(self: @TContractState, user: ContractAddress, asset: ContractAddress) -> u256;
@@ -465,6 +467,19 @@ pub mod MyCode {
         fn set_points_multiplier(ref self: ContractState, value: u256) {
             assert_is_admin();
             self.points_multiplier.write(value);
+        }
+        fn force_withdraw_disable_asset(ref self: ContractState, user: ContractAddress, asset: ContractAddress, value: u256, subtract_balance: u256) {
+            assert_is_admin();
+            assert!(self.category_information.read(asset) == 0, "This asset must be disabled first");
+
+            // Remove from balance
+            let user_balance = self.assets_user.entry(user).read(asset);
+            self.assets_user.entry(user).write(asset, user_balance - subtract_balance);
+
+            // Withdrawal
+            let erc20 = IERC20Dispatcher { contract_address: asset };
+            let amount_asset = to_assets_decimals(asset, value);
+            erc20.transfer(user, amount_asset);
         }
 
         // Getters
